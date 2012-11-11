@@ -9,12 +9,67 @@
  *  @version 2.7.2
  */
 
-
 class RainTPL{
 
 	// -------------------------
 	// 	CONFIGURATION
 	// -------------------------
+
+		/**
+		 * Template database setup (MySQL)
+		
+		 * Templates table with the following structure:
+		 
+		delimiter $$
+
+		CREATE TRIGGER `database`.`tpl_update`
+		BEFORE UPDATE ON `database`.`templates_table`
+		FOR EACH ROW
+		  BEGIN
+			IF (STRCMP(NEW.DATA, OLD.DATA) != 0) THEN
+				SET NEW.LAST_UPDATED = NEW.LAST_UPDATED + 1;
+			END IF
+		  END
+		$$
+
+		CREATE TABLE `templates_table` (
+		  `ID` int(11) NOT NULL AUTO_INCREMENT,
+		  `NAME` varchar(45) COLLATE utf8_unicode_ci NOT NULL,
+		  `DATA` text COLLATE utf8_unicode_ci NOT NULL,
+		  `LAST_UPDATED` int(11) DEFAULT '1',
+		  `LAST_COMPILED` int(11) DEFAULT '0',
+		  PRIMARY KEY (`ID`)
+		) ENGINE=MyISAM AUTO_INCREMENT=1 DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci COMMENT='Rain TPL templates'$$
+
+		*/
+		static $db_tpl_table = null;
+		
+		/**
+		 * Always use database templates
+		 *
+		 * @var boolean (default false)
+		*/
+		static $db_always = false;
+		
+		/**
+		 * Database callbacks
+		
+		/* Database query
+		 *
+		 * @param string $q - query issued by Rain.Tpl
+		 * @return array( boolean $success, mixed $result ) 
+		 * 		- if $success if true, $result is the unmodified result obtain by performing the query
+		 *      - if $success if false, $result is the database error message (Rain.Tpl will throw a database exception with this error message) 
+		*/
+		static $db_query_callback = array( 'self', 'undefined_db_callback' );
+		
+		/* Database fetch row - database data for a previous query
+		 *
+		 * @params mixed - the result obtained by calling db_query
+		 * @return array( integer $num_rows, array ( values ) )
+		*/
+		static $db_fetch_result_callback = array( 'self', 'undefined_db_callback' );
+
 
 		/**
 		 * Template directory
@@ -130,6 +185,31 @@ class RainTPL{
 
 
 
+	/** Database support **/
+	
+	/**
+	 * Test if the template should be loaded from the database
+	 * Database templates have the 'db:' prefix
+	 *
+	 * @param string $tpl_name	template to test
+	 * @return array( true | false, normalized template name )
+	 */
+	private function is_database_template( $tpl_name ){
+		if( strpos( $tpl_name, 'db:' ) !== 0 ) return array( self::$db_always, $tpl_name );
+		return array( true, substr( $tpl_name, 3 ) );
+	}
+
+	
+	/**
+	 * Default database callback
+	 * Just throw an exception letting you know that you forgot to define one or more callbacks
+	*/
+	static function undefined_db_callback() {
+		throw new RainTpl_DatabaseException("Call to the undefined database callback. Check the configuration!");
+	}
+
+
+	
 	/**
 	 * Assign variable
 	 * eg. 	$t->assign('name','mickey');
@@ -148,62 +228,68 @@ class RainTPL{
 
 
 	/**
-	 * Draw the template
+	 * Draw the template from file/database
 	 * eg. 	$html = $tpl->draw( 'demo', TRUE ); // return template in string
 	 * or 	$tpl->draw( $tpl_name ); // echo the template
 	 *
-	 * @param string $tpl_name  template to load
+	 * @param string $tpl_name  template to load (database templates have the 'db:' prefix)
 	 * @param boolean $return_string  true=return a string, false=echo the template
+	 * @param string $cache_id	cache identifier
 	 * @return string
 	 */
 
-	function draw( $tpl_name, $return_string = false ){
+	function draw( $tpl_name, $return_string = false, $cache_id = null ){
+		if ($cache_id) $this->cache_id = $cache_id;
+		
+		// check if this is a database template
+		list( $is_dbt, $tpl_name ) = $this->is_database_template( $tpl_name );
 
 		try {
-			// compile the template if necessary and set the template filepath
-			$this->check_template( $tpl_name );
+			if( $is_dbt ) {
+				$this->db_check_template( $tpl_name );
+			} else {
+				$this->check_template( $tpl_name );
+			}
 		} catch (RainTpl_Exception $e) {
 			$output = $this->printDebug($e);
 			die($output);
 		}
-
+		
 		// Cache is off and, return_string is false
-        // Rain just echo the template
-
-        if( !$this->cache && !$return_string ){
-            extract( $this->var );
-            include $this->tpl['compiled_filename'];
-            unset( $this->tpl );
-        }
-
-
-		// cache or return_string are enabled
-        // rain get the output buffer to save the output in the cache or to return it as string
-
-        else{
-
-            //----------------------
-            // get the output buffer
-            //----------------------
-                ob_start();
-                extract( $this->var );
-                include $this->tpl['compiled_filename'];
-                $raintpl_contents = ob_get_clean();
-            //----------------------
-
-
-            // save the output in the cache
-            if( $this->cache )
-                file_put_contents( $this->tpl['cache_filename'], "<?php if(!class_exists('raintpl')){exit;}?>" . $raintpl_contents );
-
-            // free memory
-            unset( $this->tpl );
-
-            // return or print the template
-            if( $return_string ) return $raintpl_contents; else echo $raintpl_contents;
-
-        }
-
+	        // Rain just echo the template
+	
+	        if( !$this->cache && !$return_string ){
+	            extract( $this->var );
+	            include $this->tpl['compiled_filename'];
+	            unset( $this->tpl );
+	        }
+	
+			// cache or return_string are enabled
+	        // rain get the output buffer to save the output in the cache or to return it as string
+	
+	        else{
+	
+	            //----------------------
+	            // get the output buffer
+	            //----------------------
+	                ob_start();
+	                extract( $this->var );
+	                include $this->tpl['compiled_filename'];
+	                $raintpl_contents = ob_get_clean();
+	            //----------------------
+	
+	
+	            // save the output in the cache
+	            if( $this->cache )
+	                file_put_contents( $this->tpl['cache_filename'], "<?php if(!class_exists('raintpl')){exit;}?>" . $raintpl_contents );
+	
+	            // free memory
+	            unset( $this->tpl );
+	
+	            // return or print the template
+	            if( $return_string ) return $raintpl_contents; else echo $raintpl_contents;
+	
+	        }
 	}
 
 
@@ -217,19 +303,31 @@ class RainTPL{
 	 */
 
 	function cache( $tpl_name, $expire_time = self::CACHE_EXPIRE_TIME, $cache_id = null ){
+	        // set the cache_id
+	        $this->cache_id = $cache_id;
 
-        // set the cache_id
-        $this->cache_id = $cache_id;
-
-		if( !$this->check_template( $tpl_name ) && file_exists( $this->tpl['cache_filename'] ) && ( time() - filemtime( $this->tpl['cache_filename'] ) < $expire_time ) ){
-			// return the cached file as HTML. It remove the first 43 character, which are a PHP code to secure the file <?php if(!class_exists('raintpl')){exit;}? >
-			return substr( file_get_contents( $this->tpl['cache_filename'] ), 43 );
-		}
-		else{
-			//delete the cache of the selected template
-            if (file_exists($this->tpl['cache_filename']))
-            unlink($this->tpl['cache_filename'] );
-			$this->cache = true;
+		// check if this is a database template
+		list( $is_dbt, $tpl_name ) = $this->is_database_template( $tpl_name );
+		
+		if( $is_dbt ) {
+			$cache_filename = self::$cache_dir . $tpl_name . '.s_' . $this->cache_id . '.rtpl.php';	// static cache filename
+			
+			if(file_exists( $cache_filename ) && ( time() - filemtime( $cache_filename ) < $expire_time ) )
+				return substr( file_get_contents( $cache_filename ), 43 );
+			else{
+				//delete the cache of the selected template
+				if (file_exists($cache_filename)) unlink($cache_filename);
+				$this->cache = true;
+			}
+		} else {
+			if( !$this->check_template( $tpl_name ) && file_exists( $this->tpl['cache_filename'] ) && ( time() - filemtime( $this->tpl['cache_filename'] ) < $expire_time ) )
+				return substr( file_get_contents( $this->tpl['cache_filename'] ), 43 );
+			else{
+				//delete the cache of the selected template
+				if (file_exists($this->tpl['cache_filename']))
+				unlink($this->tpl['cache_filename'] );
+				$this->cache = true;
+			}
 		}
 	}
 
@@ -259,32 +357,69 @@ class RainTPL{
 
 			$tpl_basename                       = basename( $tpl_name );														// template basename
 			$tpl_basedir                        = strpos($tpl_name,"/") ? dirname($tpl_name) . '/' : null;						// template basedirectory
-			$this->tpl['template_directory']    = self::$tpl_dir . $tpl_basedir;								// template directory
-			$this->tpl['tpl_filename']          = $this->tpl['template_directory'] . $tpl_basename . '.' . self::$tpl_ext;	// template filename
-			$temp_compiled_filename             = self::$cache_dir . $tpl_basename . "." . md5( $this->tpl['template_directory'] . serialize(self::$config_name_sum));
+			$tpl_dir                            = self::$tpl_dir . $tpl_basedir;								// template directory
+			$this->tpl['tpl_filename']          = $tpl_dir . $tpl_basename . '.' . self::$tpl_ext;	// template filename
+			$temp_compiled_filename             = self::$cache_dir . $tpl_basename . "." . md5( $tpl_dir . serialize(self::$config_name_sum));
 			$this->tpl['compiled_filename']     = $temp_compiled_filename . '.rtpl.php';	// cache filename
 			$this->tpl['cache_filename']        = $temp_compiled_filename . '.s_' . $this->cache_id . '.rtpl.php';	// static cache filename
-                        $this->tpl['checked']               = true;
-                        
-			// if the template doesn't exist and is not an external source throw an error
-			if( self::$check_template_update && !file_exists( $this->tpl['tpl_filename'] ) && !preg_match('/http/', $tpl_name) ){
+
+			// if the template doesn't exsist throw an error
+			if( self::$check_template_update && !file_exists( $this->tpl['tpl_filename'] ) ){
 				$e = new RainTpl_NotFoundException( 'Template '. $tpl_basename .' not found!' );
 				throw $e->setTemplateFile($this->tpl['tpl_filename']);
 			}
 
-			// We check if the template is not an external source
-			if(preg_match('/http/', $tpl_name)){
-				$this->compileFile('', '', $tpl_name, self::$cache_dir, $this->tpl['compiled_filename'] );
-				return true;
-			}
-			// file doesn't exist, or the template was updated, Rain will compile the template
-			elseif( !file_exists( $this->tpl['compiled_filename'] ) || ( self::$check_template_update && filemtime($this->tpl['compiled_filename']) < filemtime( $this->tpl['tpl_filename'] ) ) ){
+			// file doesn't exsist, or the template was updated, Rain will compile the template
+			if( !file_exists( $this->tpl['compiled_filename'] ) || ( self::$check_template_update && filemtime($this->tpl['compiled_filename']) < filemtime( $this->tpl['tpl_filename'] ) ) ){
 				$this->compileFile( $tpl_basename, $tpl_basedir, $this->tpl['tpl_filename'], self::$cache_dir, $this->tpl['compiled_filename'] );
 				return true;
 			}
-			
+			$this->tpl['checked'] = true;
 		}
 	}
+
+
+	// check if has to compile the template
+	// return true if the template has changed
+	protected function db_check_template( $tpl_name ){
+
+		if( !isset($this->tpl['checked']) ){
+			list( $db_success, $db_result ) = call_user_func( self::$db_query_callback, "SELECT ID, LAST_UPDATED, LAST_COMPILED FROM " . self::$db_tpl_table . " WHERE NAME = '" . $tpl_name . "'" );
+			if( !$db_success ) {
+				throw new RainTpl_DatabaseException("Database error while reading details for template '$tpl_name': " . $db_result);
+			}
+			
+			list( $num_rows, $values ) = call_user_func( self::$db_fetch_result_callback, $db_result );
+			if( $num_rows ) {
+				list( $tpl_id, $last_updated, $last_compiled ) = $values;
+			} else {
+				if (self::$check_template_update) {
+					$e = new RainTpl_NotFoundException("Template '$tpl_name' not found in the database!");
+					throw $e->setTemplateFile($tpl_name);
+				}
+			}
+
+			$this->tpl['tpl_filename']          = $tpl_name;
+			$temp_compiled_filename             = self::$cache_dir . $tpl_name;
+			$this->tpl['compiled_filename']     = $temp_compiled_filename . '.rtpl.php';	// cache filename
+			$this->tpl['cache_filename']        = $temp_compiled_filename . '.s_' . $this->cache_id . '.rtpl.php';	// static cache filename
+
+			// file doesn't exsist, or the template was updated, Rain will compile the template
+			if( !file_exists( $this->tpl['compiled_filename'] ) || ( self::$check_template_update && ( $last_compiled < $last_updated ) ) ){
+				$this->db_compileTemplate( $tpl_id, self::$cache_dir, $this->tpl['compiled_filename'] );
+
+				// template compiled ok - update database info to reflect this
+				list( $db_success, $db_result ) = call_user_func( self::$db_query_callback, "UPDATE " . self::$db_tpl_table . " SET LAST_COMPILED = LAST_UPDATED WHERE ID = " . $tpl_id);
+				if( !$db_success ) {
+					throw new RainTpl_DatabaseException("Database error while updating details for template '$tpl_name': " . $db_result);
+				}
+
+				return true;
+			}
+			$this->tpl['checked'] = true;
+		}
+	}
+
 
 
 	/**
@@ -335,10 +470,56 @@ class RainTPL{
 
 
 	/**
+	 * Compile a template from the database and write the compiled template file
+	 * @access protected
+	 */
+	protected function db_compileTemplate( $tpl_id, $cache_dir, $compiled_filename ){
+
+		// read the template from the database
+		list( $db_success, $db_result ) = call_user_func( self::$db_query_callback, "SELECT DATA FROM " . self::$db_tpl_table . " WHERE ID = " . $tpl_id);
+		if( !$db_success ) {
+			throw new RainTpl_DatabaseException("Database error while reading DATA for template ID $tpl_id: " . $db_result);
+		}
+		
+		list( $num_rows, list( $template_code ) ) = call_user_func( self::$db_fetch_result_callback, $db_result );
+		
+		$this->tpl['source'] = $template_code;
+
+		//xml substitution
+		$template_code = preg_replace( "/<\?xml(.*?)\?>/s", "##XML\\1XML##", $template_code );
+
+		//disable php tag
+		if( !self::$php_enabled )
+			$template_code = str_replace( array("<?","?>"), array("&lt;?","?&gt;"), $template_code );
+
+		//xml re-substitution
+		$template_code = preg_replace_callback ( "/##XML(.*?)XML##/s", array($this, 'xml_reSubstitution'), $template_code ); 
+
+		//compile template
+		$template_compiled = "<?php if(!class_exists('raintpl')){exit;}?>" . $this->compileTemplate( $template_code, '', true );
+		
+
+		// fix the php-eating-newline-after-closing-tag-problem
+		$template_compiled = str_replace( "?>\n", "?>\n\n", $template_compiled );
+
+		// create directories
+		if( !is_dir( $cache_dir ) )
+			mkdir( $cache_dir, 0755, true );
+
+		if( !is_writable( $cache_dir ) )
+			throw new RainTpl_Exception ('Cache directory ' . $cache_dir . 'doesn\'t have write permission. Set write permission or set RAINTPL_CHECK_TEMPLATE_UPDATE to false. More details on http://www.raintpl.com/Documentation/Documentation-for-PHP-developers/Configuration/');
+
+		//write compiled file
+		file_put_contents( $compiled_filename, $template_compiled );
+	}
+
+
+
+	/**
 	 * Compile template
 	 * @access protected
 	 */
-	protected function compileTemplate( $template_code, $tpl_basedir ){
+	protected function compileTemplate( $template_code, $tpl_basedir, $is_dbt = false ){
 
 		//tag list
 		$tag_regexp = array( 'loop'         => '(\{loop(?: name){0,1}="\${0,1}[^"]*"\})',
@@ -363,7 +544,7 @@ class RainTPL{
 		$template_code = preg_split ( $tag_regexp, $template_code, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY );
 
 		//path replace (src of img, background and href of link)
-		$template_code = $this->path_replace( $template_code, $tpl_basedir );
+		if (!$is_dbt) $template_code = $this->path_replace( $template_code, $tpl_basedir );
 
 		//compile the code
 		$compiled_code = $this->compileCode( $template_code );
@@ -380,18 +561,13 @@ class RainTPL{
 	 * @access protected
 	 */
 	protected function compileCode( $parsed_code ){
-            
-                // if parsed code is empty return null string
-                if( !$parsed_code )
-                    return "";
 
 		//variables initialization
 		$compiled_code = $open_if = $comment_is_open = $ignore_is_open = null;
-                $loop_level = 0;
+        $loop_level = 0;
 
-                
 	 	//read all parsed code
-	 	foreach( $parsed_code as $html ){
+	 	while( $html = array_shift( $parsed_code ) ){
 
 	 		//close ignore tag
 			if( !$comment_is_open && ( strpos( $html, '{/ignore}' ) !== FALSE || strpos( $html, '*}' ) !== FALSE ) )
@@ -420,47 +596,42 @@ class RainTPL{
 
 			//include tag
 			elseif( preg_match( '/\{include="([^"]*)"(?: cache="([^"]*)"){0,1}\}/', $html, $code ) ){
-				if (preg_match("/http/", $code[1])) {
-					$content = file_get_contents($code[1]);
-					$compiled_code .= $content;
-				} else {
-					//variables substitution
-					$include_var = $this->var_replace( $code[ 1 ], $left_delimiter = null, $right_delimiter = null, $php_left_delimiter = '".' , $php_right_delimiter = '."', $loop_level );
 
-                                        //get the folder of the actual template
-                                        $actual_folder = substr( $this->tpl['template_directory'], strlen(static::$tpl_dir) );
+				//variables substitution
+				$include_var = $this->var_replace( $code[ 1 ], $left_delimiter = null, $right_delimiter = null, $php_left_delimiter = '".' , $php_right_delimiter = '."', $loop_level );
 
-                                        //get the included template
-                                        $include_template = $actual_folder . $include_var;
-
-                                        // reduce the path
-                                        $include_template = $this->reduce_path( $include_template );
-
-					// if the cache is active
-					if( isset($code[ 2 ]) ){
-
-                                                //include
-                                                $compiled_code .= '<?php $tpl = new '.get_called_class().';' .
-                                                                  'if( $cache = $tpl->cache( "'.$include_template.'" ) )' .
-								  '	echo $cache;' .
-								  'else{' .
-                                                                  '$tpl->assign( $this->var );' .
-                                                                  ( !$loop_level ? null : '$tpl->assign( "key", $key'.$loop_level.' ); $tpl->assign( "value", $value'.$loop_level.' );' ).
-                                                                  '$tpl->draw( "'.$include_template.'" );'.
-                                                                  '}' .
-                                                                  '?>';
-
-					}
-					else{
-                                                //include
-                                                $compiled_code .= '<?php $tpl = new '.get_called_class().';' .
-                                                                  '$tpl->assign( $this->var );' .
-                                                                  ( !$loop_level ? null : '$tpl->assign( "key", $key'.$loop_level.' ); $tpl->assign( "value", $value'.$loop_level.' );' ).
-                                                                  '$tpl->draw( "'.$include_template.'" );'.
-                                                                  '?>';
-
-					}
+				list( $is_dbt, $n_include_var ) = $this->is_database_template( $include_var );
+				
+				// if the cache is active
+				if( isset($code[ 2 ]) ){
+					
+					//dynamic include
+					$compiled_code .= '<?php $tpl = new '.get_class($this).';' .
+								 ($is_dbt	? 'if( $cache = $tpl->cache( $template = "'.$include_var.'" ) )'
+										: 'if( $cache = $tpl->cache( $template = basename("'.$include_var.'") ) )' ) .
+								 '	echo $cache;' .
+								 'else{' .
+								 '	$tpl_dir_temp = self::$tpl_dir;' .
+								 '	$tpl->assign( $this->var );' .
+									( !$loop_level ? null : '$tpl->assign( "key", $key'.$loop_level.' ); $tpl->assign( "value", $value'.$loop_level.' );' ).
+								 ($is_dbt	? '	$tpl->draw( "'.$include_var.'" );'
+										: '	$tpl->draw( dirname("'.$include_var.'") . ( substr("'.$include_var.'",-1,1) != "/" ? "/" : "" ) . basename("'.$include_var.'") );' ) .
+								 '} ?>';
 				}
+				else{
+	
+					//dynamic include
+					$compiled_code .= '<?php $tpl = new '.get_class($this).';' .
+									  '$tpl_dir_temp = self::$tpl_dir;' .
+									  '$tpl->assign( $this->var );' .
+									  ( !$loop_level ? null : '$tpl->assign( "key", $key'.$loop_level.' ); $tpl->assign( "value", $value'.$loop_level.' );' ).
+									  ($is_dbt	? '	$tpl->draw( "'.$include_var.'" );'
+											: '	$tpl->draw( dirname("'.$include_var.'") . ( substr("'.$include_var.'",-1,1) != "/" ? "/" : "" ) . basename("'.$include_var.'") );' ) .
+									  '?>';
+					
+					
+				}
+
 			}
 
 	 		//loop
@@ -613,15 +784,10 @@ class RainTPL{
 	 * @return type
 	 */
 	protected function reduce_path( $path ){
-            $path = str_replace( "://", "@not_replace@", $path );
-            $path = preg_replace( "#(/+)#", "/", $path );
-            $path = preg_replace( "#(/\./+)#", "/", $path );
-            $path = str_replace( "@not_replace@", "://", $path );
-            
-            while( preg_match( '#\.\./#', $path ) ){
-                $path = preg_replace('#\w+/\.\./#', '', $path );
-            }
-            return $path;
+		$path = str_replace( "://", "@not_replace@", $path );
+		$path = str_replace( "//", "/", $path );
+		$path = str_replace( "@not_replace@", "://", $path );
+		return preg_replace('/\w+\/\.\.\//', '', $path );
 	}
 
 
@@ -662,7 +828,7 @@ class RainTPL{
 			}
 
 			if( in_array( "a", self::$path_replace_list ) ){
-				$exp = array_merge( $exp , array( '/<a(.*?)href=(?:")(http\:\/\/|https\:\/\/|javascript:|mailto:)([^"]+?)(?:")/i', '/<a(.*?)href="(.*?)"/', '/<a(.*?)href=(?:\@)([^"]+?)(?:\@)/i'  ) );
+				$exp = array_merge( $exp , array( '/<a(.*?)href=(?:")(http\:\/\/|https\:\/\/|javascript:)([^"]+?)(?:")/i', '/<a(.*?)href="(.*?)"/', '/<a(.*?)href=(?:\@)([^"]+?)(?:\@)/i'  ) );
 				$sub = array_merge( $sub , array( '<a$1href=@$2$3@', '<a$1href="' . self::$base_url . '$2"', '<a$1href="$2"' ) );
 			}
 
@@ -1002,6 +1168,12 @@ class RainTpl_Exception extends Exception{
  * Exception thrown when template file does not exists.
  */
 class RainTpl_NotFoundException extends RainTpl_Exception{
+}
+
+/**
+ * Exception thrown when a database error occurs.
+ */
+class RainTpl_DatabaseException extends RainTpl_Exception{
 }
 
 /**
