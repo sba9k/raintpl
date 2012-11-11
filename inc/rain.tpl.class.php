@@ -28,7 +28,7 @@ class RainTPL{
 		  BEGIN
 			IF (STRCMP(NEW.DATA, OLD.DATA) != 0) THEN
 				SET NEW.LAST_UPDATED = NEW.LAST_UPDATED + 1;
-			END IF
+			END IF;
 		  END
 		$$
 
